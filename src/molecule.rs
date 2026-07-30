@@ -12,6 +12,7 @@
 //! The molecule is also a rigid body: thruster atoms inject force (and torque,
 //! since they act off-centre) and it drifts through 2D space.
 
+use std::cmp::Ordering;
 use godot::prelude::*;
 
 use crate::atom::AtomKind;
@@ -55,6 +56,7 @@ pub struct Molecule {
     /// Species tint (0..1 hue-ish) inherited by children, for rendering.
     pub hue: f32,
     pub size: f32,
+    pub max_radius: f32,
 }
 
 fn rotate_2d(sin_cos: (f32, f32), vector2: Vector2) -> Vector2 {
@@ -138,10 +140,19 @@ impl Molecule {
             is_food: false,
             hue,
             size,
+            max_radius: 0.0f32,
         }
     }
 
+    pub fn calculate_max_radius(&self) -> f32 {
+        self.local_off.iter()
+            .map(|v| v.length_squared())
+            .max_by(|l, r| l.partial_cmp(r).unwrap_or(Ordering::Equal))
+            .unwrap_or(0.0)
+    }
+
     /// A free-floating single-atom nutrient.
+    #[inline(never)]
     pub fn food(pos: Vector2, vel: Vector2, size: f32) -> Molecule {
         let genome = Genome {
             genes: vec![crate::genome::Gene {

@@ -10,7 +10,7 @@
 //! molecule does something coherent instead of nothing.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-
+use fxhash::{FxHashMap, FxHashSet};
 use crate::atom::{AtomKind, GateOp};
 use crate::config::*;
 use crate::hex_grid::{Axial, Dir};
@@ -74,7 +74,7 @@ fn pref_weights(parent: Cat) -> [f32; 7] {
 
 impl Genome {
     /// Map of occupied cells -> gene index.
-    fn occupied(&self) -> HashMap<Axial, usize> {
+    fn occupied(&self) -> FxHashMap<Axial, usize> {
         self.genes.iter().enumerate().map(|(i, g)| (g.coord, i)).collect()
     }
 
@@ -248,7 +248,7 @@ impl Genome {
             return;
         }
         let occ = self.occupied();
-        let mut keep: HashSet<usize> = HashSet::new();
+        let mut keep: FxHashSet<usize> = FxHashSet::default();
         let mut queue: VecDeque<usize> = VecDeque::new();
         keep.insert(0);
         queue.push_back(0);

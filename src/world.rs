@@ -19,6 +19,12 @@ use crate::genome::Genome;
 use crate::molecule::Molecule;
 use crate::rng::Rng;
 
+#[derive(Debug, Default, Clone, Copy)]
+struct Stats {
+    total_nearby: usize,
+    hits_nearby: usize,
+}
+
 pub struct World {
     pub molecules: Vec<Molecule>,
     pub rng: Rng,
@@ -31,6 +37,10 @@ pub struct World {
     grid: FxHashMap<(i32, i32), Vec<(u32, u32)>>,
     sensor_sets: Vec<(usize, usize, f32)>,
     eat_intents: Vec<(usize, usize, usize, usize, f32)>,
+    newborns: Vec<Molecule>,
+    molecules_swap: Vec<Molecule>,
+    new_food: Vec<Molecule>,
+    stats: Stats
     
     // quad_tree: KdTree<f32, (u32, u32), [f32; 2]>
 }
@@ -54,6 +64,10 @@ impl World {
             // quad_tree: KdTree::new(2),
             sensor_sets: vec![],
             eat_intents: vec![],
+            newborns: vec![],
+            molecules_swap: vec![],
+            new_food: vec![],
+            stats: Default::default(),
         }
     }
 
@@ -114,6 +128,20 @@ impl World {
         ((p.x * self.size_inv).floor() as i32, (p.y * self.size_inv).floor() as i32)
     }
 
+    #[inline]
+    fn cells_of(&self, p: Vector2) -> [(i32, i32); 4] {
+        let x = (p.x * self.size_inv);
+        let y = (p.y * self.size_inv);
+        let x_center = x.floor() as i32;
+        let y_center = y.floor() as i32;
+        match (x.fract() > 0.5, y.fract() > 0.5) {
+            (true, true) => [(x_center, y_center), (x_center + 1, y_center), (x_center, y_center + 1), (x_center + 1, y_center + 1)],
+            (false, true) => [(x_center, y_center), (x_center - 1, y_center), (x_center, y_center + 1), (x_center - 1, y_center + 1)],
+            (true, false) => [(x_center, y_center), (x_center + 1, y_center), (x_center, y_center - 1), (x_center + 1, y_center - 1)],
+            (false, false) => [(x_center, y_center), (x_center - 1, y_center), (x_center, y_center - 1), (x_center - 1, y_center - 1)],
+        }
+    }
+
     fn rebuild_grid(&mut self) {
         // self.quad_tree = KdTree::with_capacity(
         //     2,
@@ -139,7 +167,8 @@ impl World {
     #[inline(never)]
     fn for_atoms_near<F: FnMut(usize, usize)>(&self, center: Vector2, cell_radius: i32, mut f: F) {
 
-        let (cx, cy) = self.cell_of(center);
+        // let (cx, cy) = self.cell_of(center);
+        let cells = self.cells_of(center);
         // let area = AreaBuilder::default()
         //     .anchor(Point {x: cx - cell_radius, y: cy - cell_radius})
         //     .dimensions((cell_radius * 2, cell_radius * 2))
@@ -152,9 +181,11 @@ impl World {
         //     f(*mi as usize, *ai as usize)
         // }
 
-        if let Some(bucket) = self.grid.get(&(cx, cy)) {
-            for &(mi, ai) in bucket {
-                f(mi as usize, ai as usize);
+        for cell in cells.iter() {
+            if let Some(bucket) = self.grid.get(cell) {
+                for &(mi, ai) in bucket {
+                    f(mi as usize, ai as usize);
+                }
             }
         }
 
@@ -174,7 +205,8 @@ impl World {
         &mut self,
         sensor_range: f32,
         sensor_cellr: i32,
-        eat_range: f32
+        eat_range: f32,
+        stats: &mut Stats
     ) {
         let mut sensor_sets = vec![];
         let mut eat_intents = vec![];
@@ -194,7 +226,8 @@ impl World {
                     ai,
                     sensor_range,
                     sensor_cellr,
-                    eat_range
+                    eat_range,
+                    stats
                 );
             }
         }
@@ -205,14 +238,16 @@ impl World {
 
     #[inline(never)]
     fn process_atoms(
-        &self, m: &Molecule,
+        &self,
+        m: &Molecule,
         sensor_sets: &mut Vec<(usize, usize, f32)>,
         eat_intents: &mut Vec<(usize, usize, usize, usize, f32)>,
         mi: usize,
         ai: usize,
         sensor_range: f32,
         sensor_cellr: i32,
-        eat_range: f32
+        eat_range: f32,
+        stats: &mut Stats
     ) {
         match m.kinds[ai] {
             AtomKind::Sensor => {
@@ -220,11 +255,13 @@ impl World {
                 let mut count = 0.0f32;
                 let r2 = (sensor_range * 0.6) * (sensor_range * 0.6);
                 self.for_atoms_near(ahead, sensor_cellr, |omi, oai| {
+                    stats.total_nearby += 1;
                     if omi == mi {
                         return;
                     }
                     let d2 = (self.molecules[omi].atom_world(oai) - ahead).length_squared();
                     if d2 <= r2 {
+                        stats.hits_nearby += 1;
                         count += 1.0;
                     }
                 });
@@ -238,11 +275,13 @@ impl World {
                 let er2 = eat_range * eat_range;
                 let mut best: Option<(usize, usize, f32)> = None;
                 self.for_atoms_near(mouth, 2, |omi, oai| {
+                    stats.total_nearby += 1;
                     if omi == mi {
                         return;
                     }
                     let d2 = (self.molecules[omi].atom_world(oai) - mouth).length_squared();
                     if d2 <= er2 && best.map_or(true, |(_, _, bd)| d2 < bd) {
+                        stats.hits_nearby += 1;
                         best = Some((omi, oai, d2));
                     }
                 });
@@ -273,11 +312,19 @@ impl World {
         // // (eater_mol, eater_atom, victim_mol, victim_atom, dist2)
         // let mut eat_intents: Vec<(usize, usize, usize, usize, f32)> = Vec::new();
 
-        self.process_molecule_atoms(
-            sensor_range,
-            sensor_cellr,
-            eat_range,
-        );
+        {
+            let mut stats = Stats::default();
+            mem::swap(&mut stats, &mut self.stats);
+
+            self.process_molecule_atoms(
+                sensor_range,
+                sensor_cellr,
+                eat_range,
+                &mut stats,
+            );
+
+            mem::swap(&mut stats, &mut self.stats);
+        }
 
         // Apply sensor readings.
         for (mi, ai, r) in &self.sensor_sets {
@@ -319,18 +366,23 @@ impl World {
             victims.entry(vm).or_default().insert(va);
         }
 
-        let old = std::mem::take(&mut self.molecules);
-        let mut survivors: Vec<Molecule> = Vec::with_capacity(old.len());
-        let mut newborns: Vec<Molecule> = Vec::new();
-        let mut new_food: Vec<Molecule> = Vec::new();
+        let mut old = std::mem::take(&mut self.molecules);
+        // let mut survivors: Vec<Molecule> = Vec::with_capacity(old.len());
+        // let mut newborns: Vec<Molecule> = Vec::new();
+        // let mut new_food: Vec<Molecule> = Vec::new();
+        self.molecules_swap.clear();
+        self.newborns.clear();
+        self.new_food.clear();
 
-        for (mi, mut m) in old.into_iter().enumerate() {
+        let mut new_food = mem::take(&mut self.new_food);
+
+        for (mi, mut m) in old.drain(..).enumerate() {
             let vic = victims.get(&mi);
 
             if m.is_food {
                 // Food is consumed if its single atom was claimed.
                 if vic.map_or(true, |v| !v.contains(&0)) {
-                    survivors.push(m);
+                    new_food.push(m);
                 }
                 continue;
             }
@@ -357,30 +409,34 @@ impl World {
             }
 
             // Reproduction.
-            let population = survivors.iter().filter(|s| !s.is_food).count() + newborns.len();
+            let population = self.molecules_swap.iter().filter(|s| !s.is_food).count() + self.newborns.len();
             if m.pool > REPRO_THRESHOLD && population < MAX_MOLECULES {
                 let child = self.reproduce(&m);
                 m.pool *= 1.0 - REPRO_CHILD_FRAC;
 
                 self.alive_count += 1;
-                newborns.push(child);
+                self.newborns.push(child);
             }
 
-            survivors.push(m);
+            self.molecules_swap.push(m);
         }
 
         // self.alive_count = survivors.len() + newborns.len();
-        self.molecules = survivors;
-        self.molecules.append(&mut newborns);
+        self.molecules = mem::take(&mut old);
+        mem::swap(&mut self.molecules_swap, &mut self.molecules);
+        self.molecules.append(&mut self.newborns);
 
-        for f in new_food {
-            if self.food_count() < MAX_FOOD {
-                self.molecules.push(f);
-            }
-        }
+        let food_count = new_food.len().min(MAX_FOOD);
+        self.molecules.extend(
+            new_food
+                .drain(..)
+                .take(MAX_FOOD)
+        );
+
+        self.new_food = mem::take(&mut self.new_food);
 
         // --- Ambient food rain -----------------------------------------------
-        if self.food_count() < AMBIENT_FOOD_TARGET {
+        if food_count < AMBIENT_FOOD_TARGET {
             for _ in 0..FOOD_SPAWN_PER_STEP {
                 self.spawn_one_food();
             }
@@ -447,7 +503,7 @@ impl World {
 #[test]
 fn bench() {
     let mut world = World {
-        molecules: Vec::new(),
+        molecules: Vec::with_capacity(1000),
         rng: Rng::new(0),
         alive_count: 0,
         size: 14.0,
@@ -457,8 +513,12 @@ fn bench() {
         grid: FxHashMap::default(),
         
         // quad_tree: KdTree::new(2),
-        sensor_sets: vec![],
-        eat_intents: vec![],
+        sensor_sets: Vec::with_capacity(1000),
+        eat_intents: Vec::with_capacity(1000),
+        newborns: Vec::with_capacity(1000),
+        molecules_swap: Vec::with_capacity(1000),
+        new_food:Vec::with_capacity(1000),
+        stats: Default::default(),
     };
 
     world.spawn_random_population(1000);
@@ -466,5 +526,9 @@ fn bench() {
     for _ in 0..1000 {
         world.step(0.001)
     }
+
+    let hit_proportion = (world.stats.hits_nearby as f32) / (world.stats.total_nearby as f32);
+    println!("stats: {:?}", world.stats);
+    println!("hit_proportion: {}", hit_proportion);
 
 }
