@@ -97,8 +97,11 @@ impl INode2D for EvoWorld {
             }
             self.alive_count = self.world
                 .as_ref()
-                .map(|w| w.molecules.len() as i32)
+                .map(|w| w.alive_count as i32)
                 .unwrap_or(0);
+            if self.alive_count == 0 {
+                self.reset()
+            }
         }
         self.render();
     }

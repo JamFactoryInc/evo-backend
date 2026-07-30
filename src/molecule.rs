@@ -281,6 +281,7 @@ impl Molecule {
                     }
                     if intake > 0.0 {
                         let fuel = intake * THRUST_FUEL;
+
                         if self.pool + dpool > fuel {
                             dpool -= fuel;
                             let f = self.dir_world(self.facing[i]) * (intake * THRUST_FORCE);

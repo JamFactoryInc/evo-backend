@@ -138,6 +138,31 @@ impl Genome {
         g
     }
 
+    pub fn rocket(rng: &mut Rng, min: usize, max: usize) -> Genome {
+        Genome {
+            genes: vec![
+                Gene {
+                    coord: Axial::ORIGIN,
+                    kind: AtomKind::Seed,
+                    facing: Dir::from_index(rng.below(6)),
+                    param: 0.0,
+                },
+                Gene {
+                    coord: Axial::new(0, 1),
+                    kind: AtomKind::Thruster,
+                    facing: Dir::from_index(rng.below(6)),
+                    param: 0.0,
+                },
+                Gene {
+                    coord: Axial::new(0, 2),
+                    kind: AtomKind::Eater,
+                    facing: Dir::from_index(rng.below(6)),
+                    param: 0.0,
+                }
+            ],
+        }
+    }
+
     /// Attempt to attach one new atom to a free neighbouring cell. Returns
     /// false if the structure has no exposed edge (should not happen in
     /// practice, but keeps growth loops safe).

@@ -20,6 +20,7 @@ use crate::rng::Rng;
 pub struct World {
     pub molecules: Vec<Molecule>,
     pub rng: Rng,
+    pub alive_count: usize,
     pub size: f32,
     pub time: f32,
     hue_cursor: f32,
@@ -32,6 +33,7 @@ impl World {
         World {
             molecules: Vec::new(),
             rng: Rng::new(seed),
+            alive_count: 0,
             size,
             time: 0.0,
             hue_cursor: 0.0,
@@ -42,6 +44,7 @@ impl World {
     pub fn clear(&mut self) {
         self.molecules.clear();
         self.time = 0.0;
+        self.alive_count = 0;
     }
 
     fn next_hue(&mut self) -> f32 {
@@ -70,7 +73,9 @@ impl World {
             let theta = self.rng.range(0.0, std::f32::consts::TAU);
             let hue = self.next_hue();
             let m = Molecule::from_genome(genome, pos, theta, START_POOL, hue, self.size);
+
             self.molecules.push(m);
+            self.alive_count += 1;
         }
         for _ in 0..AMBIENT_FOOD_TARGET {
             self.spawn_one_food();
@@ -190,12 +195,19 @@ impl World {
         eat_intents.sort_by(|a, b| a.4.partial_cmp(&b.4).unwrap_or(std::cmp::Ordering::Equal));
         let mut claimed: HashSet<(usize, usize)> = HashSet::new();
         for (em, ea, vm, va, _) in eat_intents {
-            if claimed.contains(&(vm, va)) {
+            if (!self.molecules[vm].is_food) {
+                continue;
+            }
+            if claimed.contains(&(vm, va)) || self.molecules[em].vel.length_squared() < 10.0 {
                 continue;
             }
             claimed.insert((vm, va));
             self.molecules[em].ate[ea] = true;
             self.molecules[em].pool += FOOD_VALUE;
+
+            let mass = self.molecules[em].mass;
+            let vel = self.molecules[em].vel;
+            self.molecules[em].vel -= vel / mass;
         }
 
         // --- Tick every molecule (circuit + metabolism + motion) -------------
@@ -252,14 +264,18 @@ impl World {
             if m.pool > REPRO_THRESHOLD && population < MAX_MOLECULES {
                 let child = self.reproduce(&m);
                 m.pool *= 1.0 - REPRO_CHILD_FRAC;
+
+                self.alive_count += 1;
                 newborns.push(child);
             }
 
             survivors.push(m);
         }
 
+        // self.alive_count = survivors.len() + newborns.len();
         self.molecules = survivors;
         self.molecules.append(&mut newborns);
+
         for f in new_food {
             if self.food_count() < MAX_FOOD {
                 self.molecules.push(f);
@@ -319,6 +335,7 @@ impl World {
 
     /// Scatter a dead molecule's atoms into free food.
     fn dissolve(&mut self, m: &Molecule, out: &mut Vec<Molecule>) {
+        self.alive_count -= 1;
         for i in 0..m.len() {
             if out.len() + self.food_count() >= MAX_FOOD {
                 break;
@@ -327,4 +344,25 @@ impl World {
             out.push(Molecule::food(m.atom_world(i), m.vel + drift, self.size));
         }
     }
+}
+
+
+#[test]
+fn bench() {
+    let mut world = World {
+        molecules: Vec::new(),
+        rng: Rng::new(0),
+        alive_count: 0,
+        size: 14.0,
+        time: 0.0,
+        hue_cursor: 0.0,
+        grid: HashMap::new(),
+    };
+
+    world.spawn_random_population(1000);
+
+    for _ in 0..1000 {
+        world.step(0.001)
+    }
+
 }

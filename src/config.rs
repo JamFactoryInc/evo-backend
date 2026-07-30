@@ -30,12 +30,12 @@ pub const BATT_DRAIN: f32 = 3.0;
 pub const BATT_LOSS: f32 = 0.03;
 
 /// World force produced per unit of intake signal by a thruster.
-pub const THRUST_FORCE: f32 = 26.0;
+pub const THRUST_FORCE: f32 = 2000.0;
 /// Pool burned per unit of thrust (fuel). No fuel -> no thrust.
-pub const THRUST_FUEL: f32 = 0.06;
+pub const THRUST_FUEL: f32 = 0.01;
 
 /// Pool drained per atom per tick just to stay alive (metabolism).
-pub const UPKEEP: f32 = 0.008;
+pub const UPKEEP: f32 = 0.001;
 
 /// Pool gained by an Eater per atom it consumes.
 pub const FOOD_VALUE: f32 = 7.0;
@@ -50,7 +50,7 @@ pub const SENSOR_RANGE_HEX: f32 = 5.0;
 pub const SENSOR_SATURATION: f32 = 4.0;
 
 /// Pool at which a molecule reproduces (splits off a mutated child).
-pub const REPRO_THRESHOLD: f32 = 1042.0;
+pub const REPRO_THRESHOLD: f32 = 42.0;
 /// Fraction of pool handed to the child on reproduction.
 pub const REPRO_CHILD_FRAC: f32 = 0.45;
 /// Pool a freshly spawned molecule starts with.
@@ -70,16 +70,16 @@ pub const BOUNDARY_PULL: f32 = 12.0;
 
 /// Population / food caps to bound the work per frame.
 pub const MAX_MOLECULES: usize = 400;
-pub const MAX_FOOD: usize = 6000;
+pub const MAX_FOOD: usize = 1000;
 
 /// Target ambient food count; the world tops this up over time (a food rain
 /// that seeds the ecosystem so early molecules have something to eat).
-pub const AMBIENT_FOOD_TARGET: usize = 1200;
+pub const AMBIENT_FOOD_TARGET: usize = 200;
 pub const FOOD_SPAWN_PER_STEP: usize = 3;
 
 /// Genome growth bounds for the initial random population.
 pub const SEED_MIN_ATOMS: usize = 5;
-pub const SEED_MAX_ATOMS: usize = 14;
+pub const SEED_MAX_ATOMS: usize = 30;
 pub const MAX_ATOMS: usize = 48;
 
 /// Mutation probabilities applied per reproduction.
