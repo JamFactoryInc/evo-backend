@@ -8,6 +8,7 @@
 //! emergent consequence of the energy economy.
 
 use std::collections::{HashMap, HashSet};
+use std::mem;
 use fxhash::{FxHashMap, FxHashSet};
 use godot::prelude::*;
 use kdtree::distance::squared_euclidean;
@@ -135,6 +136,7 @@ impl World {
 
     /// Visit every atom whose cell lies within `cell_radius` of `center`,
     /// calling `f(molecule_index, atom_index)`.
+    #[inline(never)]
     fn for_atoms_near<F: FnMut(usize, usize)>(&self, center: Vector2, cell_radius: i32, mut f: F) {
 
         let (cx, cy) = self.cell_of(center);
@@ -150,14 +152,105 @@ impl World {
         //     f(*mi as usize, *ai as usize)
         // }
 
-        for gx in (cx - cell_radius)..=(cx + cell_radius) {
-            for gy in (cy - cell_radius)..=(cy + cell_radius) {
-                if let Some(bucket) = self.grid.get(&(gx, gy)) {
-                    for &(mi, ai) in bucket {
-                        f(mi as usize, ai as usize);
+        if let Some(bucket) = self.grid.get(&(cx, cy)) {
+            for &(mi, ai) in bucket {
+                f(mi as usize, ai as usize);
+            }
+        }
+
+        // for gx in (cx - cell_radius)..=(cx + cell_radius) {
+        //     for gy in (cy - cell_radius)..=(cy + cell_radius) {
+        //         if let Some(bucket) = self.grid.get(&(gx, gy)) {
+        //             for &(mi, ai) in bucket {
+        //                 f(mi as usize, ai as usize);
+        //             }
+        //         }
+        //     }
+        // }
+    }
+
+    #[inline(never)]
+    fn process_molecule_atoms(
+        &mut self,
+        sensor_range: f32,
+        sensor_cellr: i32,
+        eat_range: f32
+    ) {
+        let mut sensor_sets = vec![];
+        let mut eat_intents = vec![];
+        mem::swap(&mut self.sensor_sets, &mut sensor_sets);
+        mem::swap(&mut self.eat_intents, &mut eat_intents);
+
+        for (mi, m) in self.molecules.iter().enumerate() {
+            if m.is_food {
+                continue;
+            }
+            for ai in 0..m.len() {
+                self.process_atoms(
+                    m,
+                    &mut sensor_sets,
+                    &mut eat_intents,
+                    mi,
+                    ai,
+                    sensor_range,
+                    sensor_cellr,
+                    eat_range
+                );
+            }
+        }
+
+        mem::swap(&mut self.sensor_sets, &mut sensor_sets);
+        mem::swap(&mut self.eat_intents, &mut eat_intents);
+    }
+
+    #[inline(never)]
+    fn process_atoms(
+        &self, m: &Molecule,
+        sensor_sets: &mut Vec<(usize, usize, f32)>,
+        eat_intents: &mut Vec<(usize, usize, usize, usize, f32)>,
+        mi: usize,
+        ai: usize,
+        sensor_range: f32,
+        sensor_cellr: i32,
+        eat_range: f32
+    ) {
+        match m.kinds[ai] {
+            AtomKind::Sensor => {
+                let ahead = m.atom_world(ai) + m.dir_world(m.facing[ai]) * (sensor_range * 0.5);
+                let mut count = 0.0f32;
+                let r2 = (sensor_range * 0.6) * (sensor_range * 0.6);
+                self.for_atoms_near(ahead, sensor_cellr, |omi, oai| {
+                    if omi == mi {
+                        return;
                     }
+                    let d2 = (self.molecules[omi].atom_world(oai) - ahead).length_squared();
+                    if d2 <= r2 {
+                        count += 1.0;
+                    }
+                });
+                let reading = (count / SENSOR_SATURATION).min(1.0);
+                if reading > 0.0 {
+                    sensor_sets.push((mi, ai, reading));
                 }
             }
+            AtomKind::Eater => {
+                let mouth = m.atom_world(ai) + m.dir_world(m.facing[ai]) * (self.size * 0.5);
+                let er2 = eat_range * eat_range;
+                let mut best: Option<(usize, usize, f32)> = None;
+                self.for_atoms_near(mouth, 2, |omi, oai| {
+                    if omi == mi {
+                        return;
+                    }
+                    let d2 = (self.molecules[omi].atom_world(oai) - mouth).length_squared();
+                    if d2 <= er2 && best.map_or(true, |(_, _, bd)| d2 < bd) {
+                        best = Some((omi, oai, d2));
+                    }
+                });
+                if let Some((omi, oai, d2)) = best {
+                    eat_intents.push((mi, ai, omi, oai, d2));
+                }
+            }
+            _ => {}
         }
     }
 
@@ -180,51 +273,11 @@ impl World {
         // // (eater_mol, eater_atom, victim_mol, victim_atom, dist2)
         // let mut eat_intents: Vec<(usize, usize, usize, usize, f32)> = Vec::new();
 
-        for (mi, m) in self.molecules.iter().enumerate() {
-            if m.is_food {
-                continue;
-            }
-            for ai in 0..m.len() {
-                match m.kinds[ai] {
-                    AtomKind::Sensor => {
-                        let ahead = m.atom_world(ai) + m.dir_world(m.facing[ai]) * (sensor_range * 0.5);
-                        let mut count = 0.0f32;
-                        let r2 = (sensor_range * 0.6) * (sensor_range * 0.6);
-                        self.for_atoms_near(ahead, sensor_cellr, |omi, oai| {
-                            if omi == mi {
-                                return;
-                            }
-                            let d2 = (self.molecules[omi].atom_world(oai) - ahead).length_squared();
-                            if d2 <= r2 {
-                                count += 1.0;
-                            }
-                        });
-                        let reading = (count / SENSOR_SATURATION).min(1.0);
-                        if reading > 0.0 {
-                            self.sensor_sets.push((mi, ai, reading));
-                        }
-                    }
-                    AtomKind::Eater => {
-                        let mouth = m.atom_world(ai) + m.dir_world(m.facing[ai]) * (self.size * 0.5);
-                        let er2 = eat_range * eat_range;
-                        let mut best: Option<(usize, usize, f32)> = None;
-                        self.for_atoms_near(mouth, 2, |omi, oai| {
-                            if omi == mi {
-                                return;
-                            }
-                            let d2 = (self.molecules[omi].atom_world(oai) - mouth).length_squared();
-                            if d2 <= er2 && best.map_or(true, |(_, _, bd)| d2 < bd) {
-                                best = Some((omi, oai, d2));
-                            }
-                        });
-                        if let Some((omi, oai, d2)) = best {
-                            self.eat_intents.push((mi, ai, omi, oai, d2));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
+        self.process_molecule_atoms(
+            sensor_range,
+            sensor_cellr,
+            eat_range,
+        );
 
         // Apply sensor readings.
         for (mi, ai, r) in &self.sensor_sets {
@@ -261,7 +314,7 @@ impl World {
 
         // --- Structural changes: consumed atoms, deaths, births --------------
         // Group claimed victims per molecule.
-        let mut victims: FxHashMap<usize, HashSet<usize>> = FxHashMap::default();
+        let mut victims: FxHashMap<usize, FxHashSet<usize>> = FxHashMap::default();
         for (vm, va) in claimed {
             victims.entry(vm).or_default().insert(va);
         }
@@ -356,7 +409,7 @@ impl World {
 
     /// Rebuild a molecule after some atoms were eaten. Returns None if nothing
     /// (or only the seed) survives.
-    fn rebuild_after_removal(&self, m: &Molecule, victims: &HashSet<usize>) -> Option<Molecule> {
+    fn rebuild_after_removal(&self, m: &Molecule, victims: &FxHashSet<usize>) -> Option<Molecule> {
         let mut genome = m.genome.clone();
         // Remove from the back so indices stay valid.
         let mut idxs: Vec<usize> = victims.iter().copied().collect();

@@ -209,8 +209,6 @@ impl Molecule {
             return;
         }
 
-        let sin_cos = self.theta.sin_cos();
-
         let mut next = vec![[0.0f32; 6]; n];
         let mut force = Vector2::ZERO;
         let mut torque = 0.0f32;
@@ -256,11 +254,12 @@ impl Molecule {
                     let mut high = 0u32;
                     let mut cnt = 0u32;
                     for d in 0..6 {
-                        if d != out_d && self.bonded(i, d) {
-                            cnt += 1;
-                            if inp[d] >= HI {
-                                high += 1;
-                            }
+                        if d == out_d || !self.bonded(i, d) {
+                            continue;
+                        }
+                        cnt += 1;
+                        if inp[d] >= HI {
+                            high += 1;
                         }
                     }
                     if cnt > 0 && op.eval(high, cnt) {
@@ -291,25 +290,27 @@ impl Molecule {
                             intake += inp[d];
                         }
                     }
-                    if intake > 0.0 {
-                        let fuel = intake * THRUST_FUEL;
+                    if intake <= 0.0 {
+                        continue
+                    }
+                    let fuel = intake * THRUST_FUEL;
 
-                        if self.pool + dpool > fuel {
-                            dpool -= fuel;
-                            let f = self.dir_world(self.facing[i]) * (intake * THRUST_FORCE);
-                            force += f;
-                            let r = rotate_2d(self.sin_cos, self.local_off[i]);
-                            torque += r.x * f.y - r.y * f.x;
-                        }
+                    if self.pool + dpool > fuel {
+                        dpool -= fuel;
+                        let f = self.dir_world(self.facing[i]) * (intake * THRUST_FORCE);
+                        force += f;
+                        let r = rotate_2d(self.sin_cos, self.local_off[i]);
+                        torque += r.x * f.y - r.y * f.x;
                     }
                 }
                 AtomKind::Eater => {
                     // World credited pool already; radiate a bite pulse inward.
-                    if self.ate[i] {
-                        for d in 0..6 {
-                            if self.bonded(i, d) {
-                                self.emit(&mut next, i, d, EAT_PULSE);
-                            }
+                    if !self.ate[i] {
+                        continue
+                    }
+                    for d in 0..6 {
+                        if self.bonded(i, d) {
+                            self.emit(&mut next, i, d, EAT_PULSE);
                         }
                     }
                 }
