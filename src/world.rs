@@ -8,9 +8,10 @@
 //! emergent consequence of the energy economy.
 
 use std::collections::{HashMap, HashSet};
-
+use fxhash::{FxHashMap, FxHashSet};
 use godot::prelude::*;
-
+use kdtree::distance::squared_euclidean;
+use kdtree::KdTree;
 use crate::atom::AtomKind;
 use crate::config::*;
 use crate::genome::Genome;
@@ -22,22 +23,36 @@ pub struct World {
     pub rng: Rng,
     pub alive_count: usize,
     pub size: f32,
+    pub size_inv: f32,
     pub time: f32,
     hue_cursor: f32,
     /// Spatial hash: cell -> (molecule index, atom index). Reused each step.
-    grid: HashMap<(i32, i32), Vec<(u32, u32)>>,
+    grid: FxHashMap<(i32, i32), Vec<(u32, u32)>>,
+    sensor_sets: Vec<(usize, usize, f32)>,
+    eat_intents: Vec<(usize, usize, usize, usize, f32)>,
+    
+    // quad_tree: KdTree<f32, (u32, u32), [f32; 2]>
 }
 
 impl World {
     pub fn new(seed: u64, size: f32) -> World {
+        // let a: ([f32; 2], (i32, i32)) = ([0f32, 0f32], (0, 0));
+        // let mut x = KdTree::new(2);
+        // x.add([0f32, 0f32], (0i32, 0i32));
+
         World {
             molecules: Vec::new(),
             rng: Rng::new(seed),
             alive_count: 0,
             size,
+            size_inv: 1.0 / size,
             time: 0.0,
             hue_cursor: 0.0,
-            grid: HashMap::new(),
+            grid: FxHashMap::default(),
+            
+            // quad_tree: KdTree::new(2),
+            sensor_sets: vec![],
+            eat_intents: vec![],
         }
     }
 
@@ -95,14 +110,24 @@ impl World {
 
     #[inline]
     fn cell_of(&self, p: Vector2) -> (i32, i32) {
-        ((p.x / self.size).floor() as i32, (p.y / self.size).floor() as i32)
+        ((p.x * self.size_inv).floor() as i32, (p.y * self.size_inv).floor() as i32)
     }
 
     fn rebuild_grid(&mut self) {
+        // self.quad_tree = KdTree::with_capacity(
+        //     2,
+        //     16
+        // );
         self.grid.clear();
+        for (_, m) in self.molecules.iter_mut().enumerate() {
+            let sin_cos = m.theta.sin_cos();
+            m.sin_cos = sin_cos;
+        }
         for (mi, m) in self.molecules.iter().enumerate() {
             for ai in 0..m.len() {
-                let c = self.cell_of(m.atom_world(ai));
+                let coord = m.atom_world(ai);
+                let c = self.cell_of(coord);
+                // self.quad_tree.add([coord.x, coord.y], (mi as u32, ai as u32)).expect("TODO: panic message");
                 self.grid.entry(c).or_default().push((mi as u32, ai as u32));
             }
         }
@@ -111,7 +136,20 @@ impl World {
     /// Visit every atom whose cell lies within `cell_radius` of `center`,
     /// calling `f(molecule_index, atom_index)`.
     fn for_atoms_near<F: FnMut(usize, usize)>(&self, center: Vector2, cell_radius: i32, mut f: F) {
+
         let (cx, cy) = self.cell_of(center);
+        // let area = AreaBuilder::default()
+        //     .anchor(Point {x: cx - cell_radius, y: cy - cell_radius})
+        //     .dimensions((cell_radius * 2, cell_radius * 2))
+        //     .build().unwrap();
+        // let point = &[center.x, center.y];
+        // let candidates = self.quad_tree.iter_nearest_within_radius(
+        //     point, Some(128.0), &squared_euclidean
+        // ).unwrap();
+        // for (_, (mi, ai)) in candidates {
+        //     f(*mi as usize, *ai as usize)
+        // }
+
         for gx in (cx - cell_radius)..=(cx + cell_radius) {
             for gy in (cy - cell_radius)..=(cy + cell_radius) {
                 if let Some(bucket) = self.grid.get(&(gx, gy)) {
@@ -136,9 +174,11 @@ impl World {
         let sensor_cellr = (sensor_range / self.size).ceil() as i32 + 1;
         let eat_range = EAT_RANGE_FRAC * self.size;
 
-        let mut sensor_sets: Vec<(usize, usize, f32)> = Vec::new();
-        // (eater_mol, eater_atom, victim_mol, victim_atom, dist2)
-        let mut eat_intents: Vec<(usize, usize, usize, usize, f32)> = Vec::new();
+        self.sensor_sets.clear();
+        self.eat_intents.clear();
+        // let mut sensor_sets: Vec<(usize, usize, f32)> = Vec::new();
+        // // (eater_mol, eater_atom, victim_mol, victim_atom, dist2)
+        // let mut eat_intents: Vec<(usize, usize, usize, usize, f32)> = Vec::new();
 
         for (mi, m) in self.molecules.iter().enumerate() {
             if m.is_food {
@@ -161,7 +201,7 @@ impl World {
                         });
                         let reading = (count / SENSOR_SATURATION).min(1.0);
                         if reading > 0.0 {
-                            sensor_sets.push((mi, ai, reading));
+                            self.sensor_sets.push((mi, ai, reading));
                         }
                     }
                     AtomKind::Eater => {
@@ -178,7 +218,7 @@ impl World {
                             }
                         });
                         if let Some((omi, oai, d2)) = best {
-                            eat_intents.push((mi, ai, omi, oai, d2));
+                            self.eat_intents.push((mi, ai, omi, oai, d2));
                         }
                     }
                     _ => {}
@@ -187,17 +227,21 @@ impl World {
         }
 
         // Apply sensor readings.
-        for (mi, ai, r) in sensor_sets {
-            self.molecules[mi].sensor[ai] = r;
+        for (mi, ai, r) in &self.sensor_sets {
+            self.molecules[*mi].sensor[*ai] = *r;
         }
 
         // Resolve eats: closest bite wins each victim; a victim is consumed once.
-        eat_intents.sort_by(|a, b| a.4.partial_cmp(&b.4).unwrap_or(std::cmp::Ordering::Equal));
-        let mut claimed: HashSet<(usize, usize)> = HashSet::new();
-        for (em, ea, vm, va, _) in eat_intents {
-            if (!self.molecules[vm].is_food) {
-                continue;
-            }
+        self.eat_intents.sort_by(|a, b| a.4.partial_cmp(&b.4).unwrap_or(std::cmp::Ordering::Equal));
+        let mut claimed: FxHashSet<(usize, usize)> = FxHashSet::default();
+        for (em, ea, vm, va, _) in &self.eat_intents {
+            let em = *em;
+            let ea = *ea;
+            let vm = *vm;
+            let va = *va;
+            // if (!self.molecules[vm].is_food) {
+            //     continue;
+            // }
             if claimed.contains(&(vm, va)) || self.molecules[em].vel.length_squared() < 10.0 {
                 continue;
             }
@@ -217,7 +261,7 @@ impl World {
 
         // --- Structural changes: consumed atoms, deaths, births --------------
         // Group claimed victims per molecule.
-        let mut victims: HashMap<usize, HashSet<usize>> = HashMap::new();
+        let mut victims: FxHashMap<usize, HashSet<usize>> = FxHashMap::default();
         for (vm, va) in claimed {
             victims.entry(vm).or_default().insert(va);
         }
@@ -354,9 +398,14 @@ fn bench() {
         rng: Rng::new(0),
         alive_count: 0,
         size: 14.0,
+        size_inv: 1.0 / 14.0,
         time: 0.0,
         hue_cursor: 0.0,
-        grid: HashMap::new(),
+        grid: FxHashMap::default(),
+        
+        // quad_tree: KdTree::new(2),
+        sensor_sets: vec![],
+        eat_intents: vec![],
     };
 
     world.spawn_random_population(1000);

@@ -8,3 +8,5 @@ crate-type = ["cdylib"]
 
 [dependencies]
 godot = { git = "https://github.com/godot-rust/gdext", branch = "master" }
+kdtree = "0.8.1"
+fxhash = "0.2.1"

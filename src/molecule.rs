@@ -43,6 +43,7 @@ pub struct Molecule {
     pub pool: f32,
     pub pos: Vector2,
     pub vel: Vector2,
+    pub sin_cos: (f32, f32),
     pub theta: f32,
     pub omega: f32,
     pub mass: f32,
@@ -54,6 +55,14 @@ pub struct Molecule {
     /// Species tint (0..1 hue-ish) inherited by children, for rendering.
     pub hue: f32,
     pub size: f32,
+}
+
+fn rotate_2d(sin_cos: (f32, f32), vector2: Vector2) -> Vector2 {
+    let (sin, cos) = sin_cos;
+    Vector2::new(
+        cos * vector2.x - sin * vector2.y,
+        sin * vector2.x + cos * vector2.y,
+    )
 }
 
 impl Molecule {
@@ -120,6 +129,7 @@ impl Molecule {
             pos,
             vel: Vector2::ZERO,
             theta,
+            sin_cos: theta.sin_cos(),
             omega: 0.0,
             mass,
             inv_inertia: 1.0 / inertia,
@@ -157,14 +167,14 @@ impl Molecule {
     /// World-space centre of atom `i`, accounting for the body's rotation.
     #[inline]
     pub fn atom_world(&self, i: usize) -> Vector2 {
-        self.pos + self.local_off[i].rotated(self.theta)
+        self.pos + rotate_2d(self.sin_cos, self.local_off[i])
     }
 
     /// World-space unit vector of a bond direction on this (rotated) body.
     #[inline]
     pub fn dir_world(&self, d: Dir) -> Vector2 {
         let (x, y) = d.unit();
-        Vector2::new(x, y).rotated(self.theta)
+        rotate_2d(self.sin_cos, Vector2::new(x, y))
     }
 
     /// Total signal energy on an atom's sites — used for render brightness.
@@ -198,6 +208,8 @@ impl Molecule {
             self.integrate(Vector2::ZERO, 0.0, dt);
             return;
         }
+
+        let sin_cos = self.theta.sin_cos();
 
         let mut next = vec![[0.0f32; 6]; n];
         let mut force = Vector2::ZERO;
@@ -286,7 +298,7 @@ impl Molecule {
                             dpool -= fuel;
                             let f = self.dir_world(self.facing[i]) * (intake * THRUST_FORCE);
                             force += f;
-                            let r = self.local_off[i].rotated(self.theta);
+                            let r = rotate_2d(self.sin_cos, self.local_off[i]);
                             torque += r.x * f.y - r.y * f.x;
                         }
                     }
